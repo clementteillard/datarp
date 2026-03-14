@@ -666,7 +666,7 @@ function init(){
 }
 
 function save(){
-  jbSync();
+  fbSync();
   try{localStorage.setItem('dataRP_v4',JSON.stringify({collabs:state.collabs,contacts:state.contacts,lists:state.lists,rdvs:state.rdvs,notifications:state.notifications,history:state.history,settings:state.settings,theme:document.documentElement.getAttribute('data-theme')}));}catch(e){}
 }
 
@@ -1708,63 +1708,79 @@ function exportXLSX(collabOnly){
   var ws=XLSX.utils.aoa_to_sheet(rows);var wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Contacts');XLSX.writeFile(wb,'DataRP_contacts.xlsx');
 }
 
-jbInit();
+fbInit();
 
-// JSONBin sync
-var JB_KEY='$2a$10$X0d3.25UcpeOybsoGk4gv.Peb6OFIa4l60uzdJXVmsyUHNJMKT0S6';
-var JB_BASE='https://api.jsonbin.io/v3/b';
-var JB_BIN='69b58d61b7ec241ddc6a99e2';
-var jbBusy=false,jbLastTs=0;
+// Firebase Realtime Database sync
+var RTDB_URL='https://home-renovation-79c5b-default-rtdb.europe-west1.firebasedatabase.app/datarp';
+var FB_KEY='AIzaSyCax0YjTLYA_HMP_G_kJZKaHCfPpGwrr9s';
+var fbBusy=false,fbLastTs=0;
 
 function sdot(s,msg){
   ['sync-dot','sync-dot2'].forEach(function(id){var d=document.getElementById(id);if(d)d.className='sdot '+s;});
   ['sync-lbl','sync-lbl2'].forEach(function(id){var l=document.getElementById(id);if(l&&msg)l.textContent=msg;});
 }
-async function jbSave(data){
-  var h={'Content-Type':'application/json','X-Master-Key':JB_KEY,'X-Bin-Private':'false'};
-  if(JB_BIN){
-    var r=await fetch(JB_BASE+'/'+JB_BIN,{method:'PUT',headers:h,body:JSON.stringify(data)});
-    return r.ok;
-  } else {
-    h['X-Bin-Name']='datarp';
-    var r=await fetch(JB_BASE,{method:'POST',headers:h,body:JSON.stringify(data)});
-    if(r.ok){var res=await r.json();JB_BIN=res.metadata.id;localStorage.setItem('jb_bin',JB_BIN);return true;}
-    return false;
-  }
+
+async function fbWrite(path,data){
+  var r=await fetch(RTDB_URL+'/'+path+'.json?auth='+FB_KEY,{
+    method:'PUT',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(data)
+  });
+  return r.ok;
 }
-async function jbLoad(){
-  if(!JB_BIN)return null;
-  var r=await fetch(JB_BASE+'/'+JB_BIN+'/latest',{headers:{'X-Master-Key':JB_KEY}});
+
+async function fbRead(path){
+  var r=await fetch(RTDB_URL+'/'+path+'.json?auth='+FB_KEY);
   if(!r.ok)return null;
-  var res=await r.json();
-  return res.record;
+  var d=await r.json();
+  return d;
 }
-async function jbSync(){
-  if(jbBusy)return;
-  jbBusy=true;
+
+async function fbSync(){
+  if(fbBusy)return;
+  fbBusy=true;
   var ts=Date.now();
-  jbLastTs=ts;
+  fbLastTs=ts;
   sdot('sync','Sauvegarde...');
   try{
-    var data={collabs:state.collabs,lists:state.lists,rdvs:state.rdvs,history:state.history.slice(0,200),settings:state.settings,theme:document.documentElement.getAttribute('data-theme'),contacts:state.contacts,ts:ts};
-    var ok=await jbSave(data);
-    if(ok){sdot('ok','Synchronise OK');}
-    else{sdot('err','Erreur sauvegarde');}
-  }catch(e){sdot('err','Hors ligne');console.error(e);}
-  jbBusy=false;
+    await fbWrite('main',{
+      collabs:state.collabs,
+      lists:state.lists,
+      rdvs:state.rdvs,
+      history:state.history.slice(0,200),
+      settings:state.settings,
+      theme:document.documentElement.getAttribute('data-theme'),
+      ts:ts
+    });
+    var nc=Math.ceil(state.contacts.length/300)||1;
+    await fbWrite('nc',nc);
+    for(var i=0;i<nc;i++){
+      await fbWrite('contacts_'+i,state.contacts.slice(i*300,(i+1)*300));
+    }
+    sdot('ok','Synchronise');
+  }catch(e){
+    sdot('err','Hors ligne');
+    console.error('fbSync:',e);
+  }
+  fbBusy=false;
 }
-async function jbPoll(){
-  if(jbBusy)return;
+
+async function fbPoll(){
+  if(fbBusy)return;
   try{
-    var data=await jbLoad();
-    if(!data||!data.ts||data.ts<=jbLastTs){sdot('ok','En ligne');return;}
+    var main=await fbRead('main');
+    if(!main||!main.ts||main.ts<=fbLastTs){sdot('ok','En ligne');return;}
     var changed=false;
-    if(JSON.stringify(data.collabs)!==JSON.stringify(state.collabs)){state.collabs=data.collabs||[];changed=true;}
-    if(JSON.stringify(data.lists)!==JSON.stringify(state.lists)){state.lists=data.lists||[];changed=true;}
-    if(JSON.stringify(data.rdvs)!==JSON.stringify(state.rdvs)){state.rdvs=data.rdvs||[];changed=true;}
-    if(JSON.stringify(data.contacts)!==JSON.stringify(state.contacts)){state.contacts=data.contacts||[];changed=true;}
+    if(JSON.stringify(main.collabs)!==JSON.stringify(state.collabs)){state.collabs=main.collabs||[];changed=true;}
+    if(JSON.stringify(main.lists)!==JSON.stringify(state.lists)){state.lists=main.lists||[];changed=true;}
+    if(JSON.stringify(main.rdvs)!==JSON.stringify(state.rdvs)){state.rdvs=main.rdvs||[];changed=true;}
+    if(JSON.stringify(main.history)!==JSON.stringify(state.history)){state.history=main.history||[];changed=true;}
+    var nc=await fbRead('nc')||1;
+    var allC=[];
+    for(var i=0;i<nc;i++){var cd=await fbRead('contacts_'+i);if(cd&&Array.isArray(cd))allC=allC.concat(cd);}
+    if(allC.length&&JSON.stringify(allC)!==JSON.stringify(state.contacts)){state.contacts=allC;changed=true;}
     if(changed&&state.currentUser){
-      jbLastTs=data.ts;
+      fbLastTs=main.ts;
       toast('Mise a jour recue','info');
       refreshLoginDropdown();
       if(state.currentUser.type==='admin'){renderAdminOverview();renderAdminTable();renderCollabManage();}
@@ -1773,36 +1789,41 @@ async function jbPoll(){
     sdot('ok','En ligne');
   }catch(e){sdot('err','Hors ligne');}
 }
-async function jbInit(){
+
+async function fbInit(){
   sdot('sync','Connexion...');
-  // BIN ID fixe - pas besoin de localStorage
   var loaded=false;
   try{
-    var data=await jbLoad();
-    if(data&&data.collabs!==undefined){
-      state.collabs=data.collabs||[];
-      state.lists=data.lists||[];
-      state.rdvs=data.rdvs||[];
-      state.history=data.history||[];
-      state.contacts=data.contacts||[];
-      if(data.settings)state.settings=Object.assign({},state.settings,data.settings);
-      if(data.theme)document.documentElement.setAttribute('data-theme',data.theme);
-      jbLastTs=data.ts||0;
+    var main=await fbRead('main');
+    if(main&&main.collabs!==undefined){
+      state.collabs=main.collabs||[];
+      state.lists=main.lists||[];
+      state.rdvs=main.rdvs||[];
+      state.history=main.history||[];
+      if(main.settings)state.settings=Object.assign({},state.settings,main.settings);
+      if(main.theme)document.documentElement.setAttribute('data-theme',main.theme);
+      fbLastTs=main.ts||0;
+      var nc=await fbRead('nc')||1;
+      var allC=[];
+      for(var i=0;i<nc;i++){var cd=await fbRead('contacts_'+i);if(cd&&Array.isArray(cd))allC=allC.concat(cd);}
+      if(allC.length)state.contacts=allC;
       loaded=true;
+      sdot('ok','En ligne');
     }
-    sdot('ok','En ligne');
-  }catch(e){sdot('err','Hors ligne');}
-  if(!loaded){
-    try{var s=JSON.parse(localStorage.getItem('dataRP_v4')||'{}');if(s.collabs)state.collabs=s.collabs;if(s.contacts&&s.contacts.length)state.contacts=s.contacts;if(s.lists)state.lists=s.lists;if(s.rdvs)state.rdvs=s.rdvs;}catch(ex){}
-  }
+  }catch(e){sdot('err','Hors ligne');console.error('fbInit:',e);}
+
   if(!state.contacts.length){
     state.lists=[{id:'initial',name:'Liste initiale',count:INITIAL_CONTACTS.length,date:new Date().toLocaleDateString('fr-FR')}];
-    for(var i=0;i<INITIAL_CONTACTS.length;i++){var c=INITIAL_CONTACTS[i];state.contacts.push({idx:'initial_'+i,nom:c.nom,tel:c.tel,email:c.email,cp:c.cp,status:'pending',note:'',collabId:null,listId:'initial',comments:[]});}
-    await jbSync();
+    for(var i=0;i<INITIAL_CONTACTS.length;i++){
+      var c=INITIAL_CONTACTS[i];
+      state.contacts.push({idx:'initial_'+i,nom:c.nom,tel:c.tel,email:c.email,cp:c.cp,status:'pending',note:'',collabId:null,listId:'initial',comments:[]});
+    }
+    await fbSync();
   }
+
   init();
   refreshLoginDropdown();
-  setInterval(jbPoll,8000);
+  setInterval(fbPoll,5000);
 }
 
 </script>
