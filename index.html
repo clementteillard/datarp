@@ -667,7 +667,6 @@ function init(){
 
 function save(){
   fbSync();
-  try{localStorage.setItem('dataRP_v4',JSON.stringify({collabs:state.collabs,contacts:state.contacts,lists:state.lists,rdvs:state.rdvs,notifications:state.notifications,history:state.history,settings:state.settings,theme:document.documentElement.getAttribute('data-theme')}));}catch(e){}
 }
 
 function addHistory(type,contactIdx,contactName,detail){
@@ -1710,30 +1709,42 @@ function exportXLSX(collabOnly){
 
 fbInit();
 
-// Firebase Realtime Database sync
-var RTDB_URL='https://home-renovation-79c5b-default-rtdb.europe-west1.firebasedatabase.app/datarp';
+
+// SYNC FIREBASE REALTIME DATABASE - VERSION FINALE
+var RTDB='https://home-renovation-79c5b-default-rtdb.europe-west1.firebasedatabase.app/datarp';
 var FB_KEY='AIzaSyCax0YjTLYA_HMP_G_kJZKaHCfPpGwrr9s';
-var fbBusy=false,fbLastTs=0;
+var fbBusy=false;
+var fbLastTs=0;
+var fbPollTimer=null;
 
 function sdot(s,msg){
-  ['sync-dot','sync-dot2'].forEach(function(id){var d=document.getElementById(id);if(d)d.className='sdot '+s;});
-  ['sync-lbl','sync-lbl2'].forEach(function(id){var l=document.getElementById(id);if(l&&msg)l.textContent=msg;});
+  ['sync-dot','sync-dot2'].forEach(function(id){
+    var d=document.getElementById(id);
+    if(d)d.className='sdot '+s;
+  });
+  ['sync-lbl','sync-lbl2'].forEach(function(id){
+    var l=document.getElementById(id);
+    if(l&&msg)l.textContent=msg;
+  });
 }
 
 async function fbWrite(path,data){
-  var r=await fetch(RTDB_URL+'/'+path+'.json?auth='+FB_KEY,{
-    method:'PUT',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify(data)
-  });
-  return r.ok;
+  try{
+    var r=await fetch(RTDB+'/'+path+'.json',{
+      method:'PUT',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(data)
+    });
+    return r.ok;
+  }catch(e){return false;}
 }
 
 async function fbRead(path){
-  var r=await fetch(RTDB_URL+'/'+path+'.json?auth='+FB_KEY);
-  if(!r.ok)return null;
-  var d=await r.json();
-  return d;
+  try{
+    var r=await fetch(RTDB+'/'+path+'.json');
+    if(!r.ok)return null;
+    return await r.json();
+  }catch(e){return null;}
 }
 
 async function fbSync(){
@@ -1743,25 +1754,23 @@ async function fbSync(){
   fbLastTs=ts;
   sdot('sync','Sauvegarde...');
   try{
-    await fbWrite('main',{
+    var nc=Math.ceil(state.contacts.length/300)||1;
+    var ok=await fbWrite('main',{
       collabs:state.collabs,
       lists:state.lists,
       rdvs:state.rdvs,
       history:state.history.slice(0,200),
       settings:state.settings,
       theme:document.documentElement.getAttribute('data-theme'),
+      nc:nc,
       ts:ts
     });
-    var nc=Math.ceil(state.contacts.length/300)||1;
-    await fbWrite('nc',nc);
+    if(!ok){sdot('err','Erreur');fbBusy=false;return;}
     for(var i=0;i<nc;i++){
-      await fbWrite('contacts_'+i,state.contacts.slice(i*300,(i+1)*300));
+      await fbWrite('c'+i,state.contacts.slice(i*300,(i+1)*300));
     }
     sdot('ok','Synchronise');
-  }catch(e){
-    sdot('err','Hors ligne');
-    console.error('fbSync:',e);
-  }
+  }catch(e){sdot('err','Hors ligne');}
   fbBusy=false;
 }
 
@@ -1770,19 +1779,23 @@ async function fbPoll(){
   try{
     var main=await fbRead('main');
     if(!main||!main.ts||main.ts<=fbLastTs){sdot('ok','En ligne');return;}
-    var changed=false;
-    if(JSON.stringify(main.collabs)!==JSON.stringify(state.collabs)){state.collabs=main.collabs||[];changed=true;}
-    if(JSON.stringify(main.lists)!==JSON.stringify(state.lists)){state.lists=main.lists||[];changed=true;}
-    if(JSON.stringify(main.rdvs)!==JSON.stringify(state.rdvs)){state.rdvs=main.rdvs||[];changed=true;}
-    if(JSON.stringify(main.history)!==JSON.stringify(state.history)){state.history=main.history||[];changed=true;}
-    var nc=await fbRead('nc')||1;
+    // Mise a jour d'un autre utilisateur
+    state.collabs=main.collabs||[];
+    state.lists=main.lists||[];
+    state.rdvs=main.rdvs||[];
+    state.history=main.history||[];
+    if(main.settings)state.settings=Object.assign({},state.settings,main.settings);
+    var nc=main.nc||1;
     var allC=[];
-    for(var i=0;i<nc;i++){var cd=await fbRead('contacts_'+i);if(cd&&Array.isArray(cd))allC=allC.concat(cd);}
-    if(allC.length&&JSON.stringify(allC)!==JSON.stringify(state.contacts)){state.contacts=allC;changed=true;}
-    if(changed&&state.currentUser){
-      fbLastTs=main.ts;
-      toast('Mise a jour recue','info');
-      refreshLoginDropdown();
+    for(var i=0;i<nc;i++){
+      var cd=await fbRead('c'+i);
+      if(cd&&Array.isArray(cd))allC=allC.concat(cd);
+    }
+    if(allC.length)state.contacts=allC;
+    fbLastTs=main.ts;
+    toast('Mise a jour recue','info');
+    refreshLoginDropdown();
+    if(state.currentUser){
       if(state.currentUser.type==='admin'){renderAdminOverview();renderAdminTable();renderCollabManage();}
       else{renderCollabView();}
     }
@@ -1792,10 +1805,10 @@ async function fbPoll(){
 
 async function fbInit(){
   sdot('sync','Connexion...');
-  var loaded=false;
   try{
     var main=await fbRead('main');
-    if(main&&main.collabs!==undefined){
+    if(main&&main.collabs!==undefined&&main.collabs!==null){
+      // Donnees Firebase trouvees - on les charge
       state.collabs=main.collabs||[];
       state.lists=main.lists||[];
       state.rdvs=main.rdvs||[];
@@ -1803,27 +1816,31 @@ async function fbInit(){
       if(main.settings)state.settings=Object.assign({},state.settings,main.settings);
       if(main.theme)document.documentElement.setAttribute('data-theme',main.theme);
       fbLastTs=main.ts||0;
-      var nc=await fbRead('nc')||1;
+      var nc=main.nc||1;
       var allC=[];
-      for(var i=0;i<nc;i++){var cd=await fbRead('contacts_'+i);if(cd&&Array.isArray(cd))allC=allC.concat(cd);}
+      for(var i=0;i<nc;i++){
+        var cd=await fbRead('c'+i);
+        if(cd&&Array.isArray(cd))allC=allC.concat(cd);
+      }
       if(allC.length)state.contacts=allC;
-      loaded=true;
       sdot('ok','En ligne');
+    } else {
+      // Premier lancement - creer les donnees initiales
+      state.lists=[{id:'initial',name:'Liste initiale',count:INITIAL_CONTACTS.length,date:new Date().toLocaleDateString('fr-FR')}];
+      for(var i=0;i<INITIAL_CONTACTS.length;i++){
+        var c=INITIAL_CONTACTS[i];
+        state.contacts.push({idx:'initial_'+i,nom:c.nom,tel:c.tel,email:c.email,cp:c.cp,status:'pending',note:'',collabId:null,listId:'initial',comments:[]});
+      }
+      await fbSync();
+      sdot('ok','Initialise');
     }
-  }catch(e){sdot('err','Hors ligne');console.error('fbInit:',e);}
-
-  if(!state.contacts.length){
-    state.lists=[{id:'initial',name:'Liste initiale',count:INITIAL_CONTACTS.length,date:new Date().toLocaleDateString('fr-FR')}];
-    for(var i=0;i<INITIAL_CONTACTS.length;i++){
-      var c=INITIAL_CONTACTS[i];
-      state.contacts.push({idx:'initial_'+i,nom:c.nom,tel:c.tel,email:c.email,cp:c.cp,status:'pending',note:'',collabId:null,listId:'initial',comments:[]});
-    }
-    await fbSync();
+  }catch(e){
+    sdot('err','Hors ligne');
+    console.error('fbInit error:',e);
   }
-
-  init();
+  // Mettre a jour la liste de connexion et demarrer le polling
   refreshLoginDropdown();
-  setInterval(fbPoll,5000);
+  fbPollTimer=setInterval(fbPoll,5000);
 }
 
 </script>
