@@ -1713,7 +1713,7 @@ jbInit();
 // JSONBin sync
 var JB_KEY='$2a$10$X0d3.25UcpeOybsoGk4gv.Peb6OFIa4l60uzdJXVmsyUHNJMKT0S6';
 var JB_BASE='https://api.jsonbin.io/v3/b';
-var JB_BIN=null;
+var JB_BIN='69b58d61b7ec241ddc6a99e2';
 var jbBusy=false,jbLastTs=0;
 
 function sdot(s,msg){
@@ -1775,7 +1775,7 @@ async function jbPoll(){
 }
 async function jbInit(){
   sdot('sync','Connexion...');
-  JB_BIN=localStorage.getItem('jb_bin')||null;
+  // BIN ID fixe - pas besoin de localStorage
   var loaded=false;
   try{
     var data=await jbLoad();
